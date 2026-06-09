@@ -1,0 +1,23 @@
+{
+  "name": "agent-monitor",
+  "version": "1.0.0",
+  "description": "A long-running orchestrator that drives GitHub issues from \"open\" to \"merged\" using a fleet of headless Claude Code agents, then keeps proposing new features until you stop it.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo placeholder tests pass",
+    "build": "echo placeholder build ok",
+    "lint": "echo placeholder lint ok"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AndreiOprescu/Agent-Monitor.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/AndreiOprescu/Agent-Monitor/issues"
+  },
+  "homepage": "https://github.com/AndreiOprescu/Agent-Monitor#readme"
+}
