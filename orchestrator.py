@@ -380,11 +380,33 @@ def append_ideas(merged_title, ideas):
 # --------------------------------------------------------------------------- #
 # The task lifecycle (runs in a worker-pool thread; holds ONE of N slots)
 # --------------------------------------------------------------------------- #
-def _is_transient(wout, env):
-    """An infra/availability blip (rate limit, model outage, exec failure) — not the
-    agent's fault. The agent produced no parseable result AND the session errored or
-    returned nothing. A run that produced text but no valid JSON is NOT transient."""
-    return wout is None and (env.get("is_error") or not (env.get("result") or "").strip())
+TRANSIENT_CAP = 3                  # per-issue infra-blip requeues before we escalate
+_transient_lock = threading.Lock()
+_transient_fails = {}              # issue -> consecutive infra blips; reset on any commit
+
+
+def _infra_blip(env):
+    """True only when *nothing actually ran* — safe to retry. Distinguishes a real
+    availability/exec blip from a session that DID run (spent tokens) but produced no
+    commits (budget cap, max turns, ignored contract) — the latter is a failed attempt,
+    not a blip, and must go through repair/escalate instead of looping forever."""
+    err = env.get("error")
+    if err == "exec-failed":       # the binary couldn't even launch
+        return True
+    if err == "timeout":           # it ran the full wall-clock — not a quick retry
+        return False
+    return not env.get("total_cost_usd")   # cost=? with no error -> availability/auth blip
+
+
+def _bump_transient(issue):
+    with _transient_lock:
+        _transient_fails[issue] = _transient_fails.get(issue, 0) + 1
+        return _transient_fails[issue]
+
+
+def _reset_transient(issue):
+    with _transient_lock:
+        _transient_fails.pop(issue, None)
 
 
 def work_task(issue):
@@ -412,31 +434,51 @@ def work_task(issue):
             "verifier_feedback": feedback or "(none)",
         }, cwd=wt)
 
-        # Availability/infra blip -> requeue (don't escalate, don't burn a repair round).
-        if _is_transient(wout, env):
-            log.warning("issue #%s: transient worker failure (%s) -> requeue",
-                        issue, env.get("error") or "no result")
-            remove_worktree(wt, branch)
-            delete_remote_branch(branch)
-            db.set(issue, state="QUEUED", worktree=None, pr=None, repair_round=0)
-            return
-
-        if (wout or {}).get("status") == "blocked":
-            reason = (wout or {}).get("reason", "worker reported it was blocked")
-            log.warning("issue #%s: worker blocked (%s)", issue, reason)
-            db.set(issue, state="ESCALATED")
-            append_questions(f"Issue #{issue} blocked", reason)
-            remove_worktree(wt, branch)
-            delete_remote_branch(branch)
-            return
-
-        # Agent claims it's done — the orchestrator does the deterministic git work.
+        # The real signal is whether the agent COMMITTED — not its (advisory) JSON.
+        # This salvages partial work from a run that hit the budget/turn cap mid-task.
         if not has_new_commits(wt):
-            feedback = ("No new commits were found on the branch. Implement the change "
-                        "and commit it (do not push or open a PR — the orchestrator does that).")
-            log.info("issue #%s: no commits produced -> repair", issue)
+            if (wout or {}).get("status") == "blocked":
+                reason = (wout or {}).get("reason", "worker reported it was blocked")
+                log.warning("issue #%s: worker blocked (%s)", issue, reason)
+                db.set(issue, state="ESCALATED")
+                append_questions(f"Issue #{issue} blocked", reason)
+                remove_worktree(wt, branch)
+                delete_remote_branch(branch)
+                return
+
+            if _infra_blip(env):
+                # Nothing ran (availability/auth/exec). Requeue, but cap the retries so a
+                # sustained outage can't loop forever burning a slot.
+                n = _bump_transient(issue)
+                if n > TRANSIENT_CAP:
+                    log.error("issue #%s: %d infra blips -> escalate", issue, n)
+                    db.set(issue, state="ESCALATED")
+                    append_questions(f"Issue #{issue} repeated infra failures",
+                                     f"Worker could not run {n} times ({env.get('error') or 'no inference'}) "
+                                     f"— check model availability / auth.")
+                    _reset_transient(issue)
+                    remove_worktree(wt, branch)
+                    delete_remote_branch(branch)
+                    return
+                log.warning("issue #%s: infra blip (%s) -> requeue (%d/%d)",
+                            issue, env.get("error") or "no inference", n, TRANSIENT_CAP)
+                remove_worktree(wt, branch)
+                delete_remote_branch(branch)
+                db.set(issue, state="QUEUED", worktree=None, pr=None, repair_round=0)
+                return
+
+            # It ran (spent tokens) but committed nothing — likely hit the budget/turn cap
+            # or ignored the contract. Treat as a failed attempt: repair (same worktree),
+            # escalate after max rounds. NOT a transient requeue.
+            feedback = ("Your previous attempt ended without committing anything (most likely it "
+                        "hit the turn or budget limit). Work in small steps and COMMIT frequently "
+                        "so progress is saved across attempts. Do not push or open a PR — the "
+                        "orchestrator does that.")
+            log.info("issue #%s: no commits despite inference -> repair", issue)
             db.set(issue, state="NEEDS_REPAIR", feedback=feedback)
             continue
+
+        _reset_transient(issue)     # made progress — clear the infra-blip counter
 
         try:
             push_branch(branch, wt)
