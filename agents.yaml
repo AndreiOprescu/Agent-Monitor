@@ -25,12 +25,12 @@ orchestrator:
 
 agents:
   worker:
-    model: "claude-opus-4-8"               # heavy lifting; swap to sonnet to save cost
+    model: "claude-sonnet-4-6"             # ~3x cheaper than Opus; far more headroom per task
     prompt_file: "prompts/worker.md"
     permission_mode: "acceptEdits"          # auto-accept file edits (still tool-scoped)
-    max_turns: 60
-    max_budget_usd: 3.00                     # hard per-task ceiling (trips after a turn)
-    timeout_seconds: 2400
+    max_turns: 120                           # large issues need many steps; commit incrementally
+    max_budget_usd: 8.00                     # hard per-task ceiling (trips after a turn)
+    timeout_seconds: 3600                    # up to ~60 min wall-clock for a big build
     allowed_tools:
       - "Read"
       - "Write"
@@ -45,8 +45,8 @@ agents:
     model: "claude-sonnet-4-6"              # review is cheaper than authoring
     prompt_file: "prompts/verifier.md"
     permission_mode: "default"
-    max_turns: 30
-    max_budget_usd: 1.50
+    max_turns: 40                            # a whole-feature PR is a big diff to review
+    max_budget_usd: 2.50                     # don't let the verifier cap out (no verdict = reject)
     timeout_seconds: 1200
     allowed_tools:                          # READ-ONLY + run tests. No Write/Edit.
       - "Read"
