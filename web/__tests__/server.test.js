@@ -1,10 +1,47 @@
 'use strict';
 
+// Mock node:sqlite so tests can run without a real DB or Node 22+.
+// The factory seeds four rows (two active, two terminal). The mock evaluates
+// any "NOT IN (...)" clause in the SQL so that the WHERE-based filter in
+// getIssues() is actually exercised — if the clause is absent, all rows come
+// back and the terminal-state assertions will fail, catching the regression.
+jest.mock('node:sqlite', () => ({
+  DatabaseSync: jest.fn(() => ({
+    prepare: (sql) => ({
+      all: () => {
+        if (sql.includes('PRAGMA table_info')) {
+          return [
+            { name: 'issue' }, { name: 'title' }, { name: 'body' },
+            { name: 'state' }, { name: 'agent_name' },
+          ];
+        }
+        const rows = [
+          { issue: '1', title: 'Pending issue', body: '', state: 'PENDING', agent_name: null },
+          { issue: '2', title: 'In progress', body: '', state: 'IN_PROGRESS', agent_name: 'x' },
+          { issue: '3', title: 'Merged', body: '', state: 'MERGED', agent_name: null },
+          { issue: '4', title: 'Done', body: '', state: 'DONE', agent_name: null },
+        ];
+        // Simulate SQLite's NOT IN (...) evaluation so the SQL WHERE clause is tested.
+        const notIn = sql.match(/NOT IN \(([^)]+)\)/i);
+        if (notIn) {
+          const excluded = notIn[1].split(',').map(s => s.trim().replace(/'/g, ''));
+          return rows.filter(r => !excluded.includes(r.state));
+        }
+        return rows;
+      },
+    }),
+    close: jest.fn(),
+  })),
+}), { virtual: true });
+
 const request = require('supertest');
 const path = require('path');
 const fs = require('fs');
 const yaml = require('js-yaml');
-const { app, getIdeas, classifyFiles, IDEAS_YAML } = require('../server');
+const { app, getIssues, getIdeas, classifyFiles, IDEAS_YAML } = require('../server');
+
+// Derive the same DB_PATH that server.js uses.
+const DB_PATH = path.resolve(__dirname, '..', '..', 'state', 'pipeline.db');
 
 // ---------------------------------------------------------------------------
 // GET /api/issues
@@ -24,6 +61,24 @@ describe('GET /api/issues', () => {
       expect(typeof issue.oneLiner).toBe('string');
       expect(typeof issue.state).toBe('string');
       expect(Object.prototype.hasOwnProperty.call(issue, 'agentName')).toBe(true);
+    }
+  });
+
+  it('excludes MERGED and DONE; keeps PENDING and IN_PROGRESS', () => {
+    // Create a placeholder DB file so openDb() passes the existsSync check;
+    // node:sqlite is mocked above to return all four states.
+    fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+    fs.writeFileSync(DB_PATH, '');
+    try {
+      const issues = getIssues();
+      const states = issues.map(i => i.state);
+      expect(states).not.toContain('MERGED');
+      expect(states).not.toContain('DONE');
+      expect(states).toContain('PENDING');
+      expect(states).toContain('IN_PROGRESS');
+      expect(issues.length).toBe(2);
+    } finally {
+      fs.unlinkSync(DB_PATH);
     }
   });
 });

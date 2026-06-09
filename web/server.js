@@ -63,7 +63,7 @@ function getIssues() {
     const fields = ['issue', 'title', 'body', 'state'];
     if (cols.has('agent_name')) fields.push('agent_name');
     const rows = db.prepare(
-      `SELECT ${fields.join(',')} FROM tasks ORDER BY priority ASC, issue ASC`
+      `SELECT ${fields.join(',')} FROM tasks WHERE state NOT IN ('MERGED','DONE') ORDER BY priority ASC, issue ASC`
     ).all();
     return rows.map(r => ({
       number: Number(r.issue),
