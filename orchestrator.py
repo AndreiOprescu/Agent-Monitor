@@ -26,6 +26,7 @@ of your git repo and run from there.  See README.md.
 import json
 import logging
 import os
+import random
 import re
 import secrets
 import shutil
@@ -71,6 +72,22 @@ git_lock = threading.Lock()
 # --------------------------------------------------------------------------- #
 # State store (thread-safe SQLite — opens a connection per call)
 # --------------------------------------------------------------------------- #
+_CODENAME_ADJ = [
+    "brave", "calm", "deft", "eager", "keen",
+    "swift", "wise", "bold", "quick", "neat",
+    "firm", "glad", "mild", "pure", "sage",
+]
+_CODENAME_NOUN = [
+    "fox", "owl", "panda", "bear", "hawk",
+    "wolf", "lynx", "crow", "seal", "newt",
+    "ibis", "kite", "mink", "rook", "wren",
+]
+
+
+def _codename():
+    return f"{random.choice(_CODENAME_ADJ)}-{random.choice(_CODENAME_NOUN)}"
+
+
 class Store:
     def __init__(self, path):
         self.path = str(path)
@@ -88,9 +105,14 @@ class Store:
                     worktree     TEXT,
                     repair_round INTEGER DEFAULT 0,
                     feedback     TEXT,
+                    agent_name   TEXT,
                     updated      REAL
                 );
             """)
+            # Migrate existing databases that predate the agent_name column.
+            cols = {row[1] for row in c.execute("PRAGMA table_info(tasks)").fetchall()}
+            if "agent_name" not in cols:
+                c.execute("ALTER TABLE tasks ADD COLUMN agent_name TEXT")
 
     def _connect(self):
         # Returns a WAL-mode connection with row factory and busy timeout set.
@@ -252,10 +274,16 @@ def _run(cmd, **kw):
 
 
 def make_worktree(issue):
-    """Create a fresh branch + worktree off the latest base branch."""
+    """Create a fresh branch + worktree off the latest base branch.
+
+    Returns (worktree_path, branch_name, codename). The codename is a
+    human-readable adjective-noun slug stored on the task row and embedded
+    in both the branch name and the worktree directory name.
+    """
     base = PROJECT["base_branch"]
-    branch = f"agent/issue-{issue}-{secrets.token_hex(2)}"
-    wt = (ROOT / PROJECT["worktree_root"] / f"issue-{issue}").resolve()
+    name = _codename()
+    branch = f"agent/issue-{issue}-{name}"
+    wt = (ROOT / PROJECT["worktree_root"] / f"issue-{issue}-{name}").resolve()
     with git_lock:
         _run(["git", "fetch", "origin", base])
         if wt.exists():
@@ -264,8 +292,8 @@ def make_worktree(issue):
         r = _run(["git", "worktree", "add", "-b", branch, str(wt), f"origin/{base}"])
         if r.returncode != 0:
             raise RuntimeError(f"worktree add failed: {r.stderr.strip()}")
-    log.info("issue #%s -> branch %s", issue, branch)
-    return str(wt), branch
+    log.info("issue #%s -> branch %s (codename=%s)", issue, branch, name)
+    return str(wt), branch, name
 
 
 def remove_worktree(wt, branch=None):
@@ -390,8 +418,8 @@ def _is_transient(wout, env):
 def work_task(issue):
     t = db.get(issue)
     try:
-        wt, branch = make_worktree(issue)
-        db.set(issue, worktree=wt, branch=branch, state="IN_PROGRESS")
+        wt, branch, codename = make_worktree(issue)
+        db.set(issue, worktree=wt, branch=branch, agent_name=codename, state="IN_PROGRESS")
         push_branch(branch, wt)         # branch exists on origin immediately; auth fails fast
     except Exception as e:
         log.exception("issue #%s: could not start", issue)
