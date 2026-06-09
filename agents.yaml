@@ -1,0 +1,89 @@
+# agents.yaml — configuration for the multi-agent pipeline. Read by orchestrator.py.
+
+project:
+  # Deterministic gate commands, run inside each task's worktree BEFORE the
+  # verifier looks at it. Adjust to your stack. Set any to "" to skip it.
+  test_cmd:  "npm test"
+  build_cmd: "npm run build"
+  lint_cmd:  "npm run lint"
+  base_branch:   "main"          # what everything branches from and merges into
+  worktree_root: ".worktrees"    # per-task worktrees live here (gitignored)
+  merge_method:  "squash"        # squash | merge | rebase
+
+orchestrator:
+  poll_seconds:      30         # reconcile / assign work every 3 minutes
+  heartbeat_seconds: 120        # heartbeat every 30 minutes
+  max_workers:       1           # max tasks in flight at once (your "2 agents")
+  max_repair_rounds: 3           # after this many verifier rejections -> escalate
+  ideas_file:        "state/ideas.md"      # ideator appends here
+  questions_file:    "state/questions.md"  # heartbeat + escalations land here
+
+# ---- Per-role agent definitions. Each becomes a headless `claude -p` session. ----
+# Tool permissions are scoped deliberately. `Bash(git diff *)` (with a space)
+# only matches commands starting with `git diff`; `Bash(git:*)` matches any git
+# command. Tighten these as you gain trust in the pipeline.
+
+agents:
+  worker:
+    model: "claude-opus-4-8"               # heavy lifting; swap to sonnet to save cost
+    prompt_file: "prompts/worker.md"
+    permission_mode: "acceptEdits"          # auto-accept file edits (still tool-scoped)
+    max_turns: 60
+    max_budget_usd: 3.00                     # hard per-task ceiling (trips after a turn)
+    timeout_seconds: 2400
+    allowed_tools:
+      - "Read"
+      - "Write"
+      - "Edit"
+      - "Grep"
+      - "Glob"
+      - "Bash(git:*)"
+      - "Bash(gh:*)"
+      - "Bash(npm:*)"
+
+  verifier:
+    model: "claude-sonnet-4-6"              # review is cheaper than authoring
+    prompt_file: "prompts/verifier.md"
+    permission_mode: "default"
+    max_turns: 30
+    max_budget_usd: 1.50
+    timeout_seconds: 1200
+    allowed_tools:                          # READ-ONLY + run tests. No Write/Edit.
+      - "Read"
+      - "Grep"
+      - "Glob"
+      - "Bash(git diff *)"
+      - "Bash(git log *)"
+      - "Bash(npm:*)"
+      - "Bash(gh pr *)"
+
+  ideator:
+    model: "claude-opus-4-8"
+    prompt_file: "prompts/ideator.md"
+    permission_mode: "default"
+    max_turns: 20
+    max_budget_usd: 1.00
+    timeout_seconds: 900
+    allowed_tools:
+      - "Read"
+      - "Grep"
+      - "Glob"
+      - "WebSearch"
+      - "Bash(gh issue list*)"
+      - "Bash(gh issue view*)"
+
+  heartbeat:
+    model: "claude-sonnet-4-6"
+    prompt_file: "prompts/heartbeat.md"
+    permission_mode: "default"
+    max_turns: 15
+    max_budget_usd: 0.75
+    timeout_seconds: 600
+    allowed_tools:                          # read-only; it returns the report as JSON
+      - "Read"
+      - "Bash(git log *)"
+      - "Bash(gh pr *)"
+      - "Bash(gh issue list*)"
+
+# NOTE: the Project Manager is intentionally NOT here. It runs interactively, by
+# hand, because it needs real back-and-forth with you. See prompts/pm.md + README.
