@@ -4,9 +4,9 @@
   "description": "A long-running orchestrator that drives GitHub issues from \"open\" to \"merged\" using a fleet of headless Claude Code agents, then keeps proposing new features until you stop it.",
   "main": "index.js",
   "scripts": {
-    "test": "echo placeholder tests pass",
-    "build": "echo placeholder build ok",
-    "lint": "echo placeholder lint ok"
+    "test": "npm --prefix web install --silent && npm --prefix web test",
+    "build": "npm --prefix web install --silent && npm --prefix web run build",
+    "lint": "npm --prefix web install --silent && npm --prefix web run lint"
   },
   "repository": {
     "type": "git",
